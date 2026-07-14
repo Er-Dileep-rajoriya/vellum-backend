@@ -16,6 +16,24 @@ jobs:
     name: lint · typecheck · test
     runs-on: ubuntu-latest
 
+    # Job-level, not step-level.
+    #
+    # These were set per-step, which meant every new step was a fresh chance to forget one — and the env
+    # schema fails closed (as it should), so a forgotten variable is a red build, not a warning. The
+    # config requires exactly four things with no default: DATABASE_URL, CORS_ORIGINS, API_JWT_SECRET and
+    # SERVICE_TOKEN. Declaring them once, for the whole job, is the only version of this that stays true
+    # as steps get added.
+    #
+    # The secrets are throwaway literals: they are long enough to satisfy the 32-char minimum and they
+    # exist nowhere else. Real secrets do not belong in a file that runs on every pull request.
+    env:
+      DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
+      TEST_DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
+      CORS_ORIGINS: http://localhost:3000
+      API_JWT_SECRET: ci-only-secret-not-used-anywhere-else-0000000000
+      SERVICE_TOKEN: ci-only-service-token-000000000000
+      NODE_ENV: test
+
     steps:
       - uses: actions/checkout@v4
 
@@ -56,18 +74,11 @@ jobs:
 
       - name: Migrate test database
         run: pnpm exec prisma migrate deploy
-        env:
-          DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
 
       # Real Postgres, real advisory locks, real triggers. The gapless-sequence test pushes 20 concurrent
       # batches and asserts no holes; a mocked database would assert nothing at all.
       - name: Tests
         run: pnpm test
-        env:
-          DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
-          TEST_DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
-          API_JWT_SECRET: ci-only-secret-not-used-anywhere-else-0000000000
-          SERVICE_TOKEN: ci-only-service-token-0000000000
 
       - run: pnpm build
 
