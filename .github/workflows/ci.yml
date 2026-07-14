@@ -7,7 +7,9 @@ on:
     branches: [main]
 
 env:
-  NODE_VERSION: "20"
+  # pnpm 11 requires Node >= 22.13. This also matches the Node the server runs (installed user-local
+  # via nvm, so the neighbouring app keeps the Node 20 it was tested on).
+  NODE_VERSION: "22"
 
 jobs:
   test:
@@ -30,6 +32,8 @@ jobs:
           sudo -u postgres psql -c "CREATE DATABASE vellum_test OWNER vellum;"
 
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -71,6 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -103,13 +109,25 @@ jobs:
       - name: Install, migrate, reload
         run: |
           ssh -i ~/.ssh/deploy.pem "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -eu <<'REMOTE'
+            # A non-interactive SSH shell does not read .bashrc, so nvm is not on PATH and neither is the
+            # pnpm that corepack installed under it. Source it explicitly — otherwise every deploy dies on
+            # "pnpm: command not found", having already rsynced the new dist/ over the old one.
+            export NVM_DIR="$HOME/.nvm"
+            . "$NVM_DIR/nvm.sh"
+            nvm use 22 >/dev/null
+
             cd ~/vellum-backend
-            export PATH="$HOME/.local/share/pnpm:$PATH"
             pnpm install --prod --frozen-lockfile
             pnpm exec prisma generate
+
+            # The generated Prisma client is TypeScript — `tsc` compiles it into dist/ as part of the
+            # build, and that compiled copy is what ships. Regenerating here only refreshes node_modules'
+            # runtime; it must not be copied over dist/generated, which would replace compiled JS with
+            # .ts source and take the process down on the next start.
             pnpm exec prisma migrate deploy
-            # `reload` and not `restart`: pm2 waits for the old process to exit its SIGTERM handler, so
-            # in-flight requests finish and WebSockets are closed cleanly rather than cut mid-frame.
+
+            # `reload`, not `restart`: pm2 waits out the SIGTERM handler, so in-flight requests finish and
+            # WebSockets close cleanly instead of being cut mid-frame on every deploy.
             pm2 reload ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
             pm2 save
           REMOTE

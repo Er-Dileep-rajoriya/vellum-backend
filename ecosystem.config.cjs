@@ -25,6 +25,20 @@ module.exports = {
       exec_mode: "fork",
       instances: 1,
 
+      /**
+       * Run on OUR Node, not the system's.
+       *
+       * The box's system Node is 20, and it stays 20 — the app that was already running here was tested
+       * on it, and upgrading a shared runtime underneath a live service to suit a newcomer is how you
+       * break something you were not even working on. So Node 22 is installed user-local via nvm and
+       * named explicitly here.
+       *
+       * Without this line pm2 launches the process with whichever Node the pm2 daemon itself runs under
+       * (the system's 20), and the failure would arrive at some unrelated future moment — the first time
+       * this code touches a 22-only API — looking nothing like a deploy problem.
+       */
+      interpreter: "/home/ubuntu/.nvm/versions/node/v22.23.1/bin/node",
+
       // The .env is read by the app itself (config/env.ts). pm2 only needs to know it is production.
       env: {
         NODE_ENV: "production",

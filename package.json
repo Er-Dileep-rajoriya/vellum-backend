@@ -5,7 +5,7 @@
   "description": "Vellum sync + collaboration server. An ordered, idempotent operation log.",
   "type": "module",
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
@@ -52,5 +52,6 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10"
-  }
+  },
+  "packageManager": "pnpm@11.4.0"
 }
