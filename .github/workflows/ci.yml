@@ -1,0 +1,128 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  test:
+    name: lint · typecheck · test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Postgres, without Docker.
+      #
+      # The usual recipe here is `services: postgres:17` — which is a container, and this project does not
+      # use containers anywhere (dev, CI and production all talk to a real Postgres process). GitHub's
+      # ubuntu runners already ship Postgres; starting it is faster than pulling an image, and it keeps CI
+      # honest: the thing the tests run against is the same *kind* of thing production runs against.
+      - name: Start Postgres
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -c "CREATE ROLE vellum LOGIN PASSWORD 'vellum' SUPERUSER;"
+          sudo -u postgres psql -c "CREATE DATABASE vellum_test OWNER vellum;"
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+      - name: Migrate test database
+        run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
+
+      # Real Postgres, real advisory locks, real triggers. The gapless-sequence test pushes 20 concurrent
+      # batches and asserts no holes; a mocked database would assert nothing at all.
+      - name: Tests
+        run: pnpm test
+        env:
+          DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
+          TEST_DATABASE_URL: postgresql://vellum:vellum@localhost:5432/vellum_test?schema=public
+          API_JWT_SECRET: ci-only-secret-not-used-anywhere-else-0000000000
+          SERVICE_TOKEN: ci-only-service-token-0000000000
+
+      - run: pnpm build
+
+  deploy:
+    name: deploy → EC2 (pm2)
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    concurrency:
+      # Two deploys racing would rsync over each other's files mid-copy and leave a half-written dist/
+      # running under pm2. One at a time, and never cancel one in flight.
+      group: deploy-backend
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma generate
+      - run: pnpm build
+
+      # The build happens HERE, not on the server. The target is a 908MB box already running another
+      # production app, and a TypeScript build there would put it minutes away from the OOM killer — which
+      # does not know which process matters. Only the output ships.
+      - name: Authorize SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Ship artifacts
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy.pem" \
+            dist package.json pnpm-lock.yaml prisma prisma.config.ts ecosystem.config.cjs \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/home/${{ secrets.DEPLOY_USER }}/vellum-backend/"
+
+      # Migrate BEFORE the new code starts: the old code must tolerate the new schema for the few seconds
+      # in between. That ordering is only safe for additive migrations — a destructive one needs the
+      # expand/contract dance (add, backfill, switch, drop) across two deploys, never a single step.
+      - name: Install, migrate, reload
+        run: |
+          ssh -i ~/.ssh/deploy.pem "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -eu <<'REMOTE'
+            cd ~/vellum-backend
+            export PATH="$HOME/.local/share/pnpm:$PATH"
+            pnpm install --prod --frozen-lockfile
+            pnpm exec prisma generate
+            pnpm exec prisma migrate deploy
+            # `reload` and not `restart`: pm2 waits for the old process to exit its SIGTERM handler, so
+            # in-flight requests finish and WebSockets are closed cleanly rather than cut mid-frame.
+            pm2 reload ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            pm2 save
+          REMOTE
+
+      # A deploy that "succeeded" while the process crash-loops is not a deploy. Ask the running service
+      # whether it is alive, from outside, and fail the pipeline if it is not.
+      - name: Smoke the live API
+        run: |
+          for i in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ secrets.DEPLOY_API_HOST }}/health" || true)
+            if [ "$code" = "200" ]; then echo "healthy"; exit 0; fi
+            echo "attempt $i: HTTP $code"; sleep 3
+          done
+          echo "API did not come back healthy after deploy"
+          ssh -i ~/.ssh/deploy.pem "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "pm2 logs vellum-backend --lines 40 --nostream"
+          exit 1

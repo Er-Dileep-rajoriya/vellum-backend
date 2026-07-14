@@ -1,0 +1,492 @@
+// Vellum — database schema.
+//
+// Design rules that every model here obeys:
+//
+//  1. The operation log is the source of truth. `Document.content` does not exist as a
+//     mutable column; document state is *derived* by folding operations. Everything else
+//     (snapshots, versions) is a cache or a checkpoint of that fold.
+//  2. Nothing is destroyed. Documents soft-delete, versions are immutable, operations are
+//     append-only, audit logs are append-only.
+//  3. Every access path is scoped by `Collaborator`. There is no query in the repository
+//     layer that reaches a Document without proving the actor is a collaborator on it.
+//  4. Indexes exist for the queries we actually run, and are named after them.
+
+// Prisma 7: the generated client is ESM TypeScript emitted into the source tree, and the
+// connection URL lives in prisma.config.ts (not here) because the runtime connects through a
+// driver adapter (@prisma/adapter-pg) rather than a bundled Rust engine.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity
+//
+// Auth.js runs in the frontend and owns the *session*. It does not own the *user*:
+// the frontend has no database access, so it calls this service (with SERVICE_TOKEN)
+// to register a credentials user or upsert an OAuth identity. That keeps Postgres
+// behind exactly one process, which is what makes tenant isolation auditable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid(2))
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+
+  // Null for OAuth-only users. scrypt (N=2^15) — see services/password.ts.
+  // Never a plaintext password, never a fast hash, never a shared salt.
+  passwordHash  String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  accounts      Account[]
+  documents     Document[]      @relation("DocumentOwner")
+  collaborators Collaborator[]
+  operations    Operation[]
+  versions      Version[]
+  syncSessions  SyncSession[]
+  auditLogs     AuditLog[]
+  aiHistory     AiHistory[]
+
+  @@index([deletedAt])
+  @@map("users")
+}
+
+/// One row per external identity (google, github…). Separate from User so that a
+/// person who signs up with a password and later signs in with Google is one user,
+/// not two — the join key is the verified email.
+model Account {
+  id                String  @id @default(cuid(2))
+  userId            String
+  provider          String
+  providerAccountId String
+  type              String
+  accessToken       String? @db.Text
+  refreshToken      String? @db.Text
+  expiresAt         Int?
+  tokenType         String?
+  scope             String?
+  idToken           String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId], name: "provider_account")
+  @@index([userId])
+  @@map("accounts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Documents & access control
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  OWNER  // full control: edit, share, restore, delete, transfer
+  EDITOR // edit, sync, restore
+  VIEWER // read only — cannot edit, sync, restore, or delete (enforced server-side)
+}
+
+model Document {
+  id      String @id @default(cuid(2))
+  title   String @default("Untitled")
+  ownerId String
+
+  /// Monotonic, gapless, per-document commit counter. Assigned by the server inside the
+  /// commit transaction under a Postgres advisory lock — never `max(serverSeq)+1` computed
+  /// in application code, which races under concurrent pushes and silently produces
+  /// duplicate sequence numbers (i.e. a permanently un-resumable log).
+  ///
+  /// This single number is every client's pull cursor: `GET /sync/pull?since=<seq>`.
+  serverSeq BigInt @default(0)
+
+  /// serverSeq of the newest materialised snapshot. Clients bootstrapping a document fetch
+  /// that snapshot plus the operations after this watermark — an O(1) open regardless of
+  /// how many million operations the document has accumulated over its life.
+  snapshotSeq BigInt @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  /// Soft delete. A deleted document stops appearing and stops accepting operations, but its
+  /// operation log and version history survive — "delete" must be recoverable by support.
+  deletedAt DateTime?
+
+  owner            User              @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  collaborators    Collaborator[]
+  operations       Operation[]
+  versions         Version[]
+  syncSessions     SyncSession[]
+  failedOperations FailedOperation[]
+  aiHistory        AiHistory[]
+
+  @@index([ownerId, deletedAt], name: "documents_by_owner")
+  @@index([deletedAt, updatedAt(sort: Desc)], name: "documents_recent")
+  @@map("documents")
+}
+
+model Collaborator {
+  id         String @id @default(cuid(2))
+  documentId String
+  userId     String
+  role       Role   @default(VIEWER)
+
+  invitedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The authorization check on the hot path (every push, pull, and WebSocket join) is a
+  /// point lookup on this unique key. It must never become a scan.
+  @@unique([documentId, userId], name: "document_user")
+  @@index([userId], name: "collaborators_by_user")
+  @@map("collaborators")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The operation log — the source of truth
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum OperationType {
+  BLOCK_INSERT
+  BLOCK_REMOVE
+  BLOCK_MOVE
+  BLOCK_SET_ATTRS
+  TEXT_INSERT
+  TEXT_DELETE
+  MARK_SET
+}
+
+model Operation {
+  /// Client-generated ULID. This is the idempotency key of the entire system: a UNIQUE
+  /// violation on insert means "already committed", which is the *success* path for a retry,
+  /// not an error. Duplicate delivery over WebSocket, a replayed batch, and an at-least-once
+  /// retry after a timeout are all made safe by this one constraint.
+  operationId String @id
+
+  documentId String
+  /// Taken from the verified access token, never from the request body. A client that
+  /// asserts someone else's userId gets its own id written instead.
+  userId     String
+  /// Replica identity (one per device+tab). Part of the CRDT's total order and its
+  /// tiebreak — not a security boundary.
+  clientId   String
+
+  /// Server-assigned commit order within the document. Gapless, monotonic, the pull cursor.
+  serverSeq BigInt
+
+  /// Lamport counter from the authoring replica. Orders causally-related operations and
+  /// breaks ties in LWW-registers. Wall-clock time is NEVER used for merge decisions —
+  /// device clocks are wrong, sometimes by years, and a merge that trusts them is a merge
+  /// that loses data when someone's laptop battery dies.
+  logicalClock Int
+
+  /// Wall clock, for the UI and audit only.
+  timestamp DateTime
+
+  /// The serverSeq the authoring replica had seen. Not used to reject writes (this is a CRDT:
+  /// a stale write still merges correctly) — it is used to *measure* divergence, drive the
+  /// conflict-queue UI, and detect a client that has fallen behind the compaction watermark.
+  documentVersion BigInt
+
+  operationType OperationType
+  /// The op payload. Validated by zod against a strict per-type schema before it ever reaches
+  /// this table, and capped at 32KB. Jsonb because we index nothing inside it and never query
+  /// into it — the log is read sequentially by serverSeq, always.
+  payload Json
+
+  createdAt DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// THE index. Every pull is `WHERE documentId = ? AND serverSeq > ? ORDER BY serverSeq LIMIT n`,
+  /// and this unique constraint's btree serves it directly — a separate @@index on the same two
+  /// columns would be a second identical btree: double the write cost on the hottest table in the
+  /// system, zero read benefit. The uniqueness is not decorative either: it is the database-level
+  /// proof that the gapless sequence assignment (see repositories/operation.repository.ts) never
+  /// hands the same slot to two concurrent pushes.
+  @@unique([documentId, serverSeq], name: "document_seq")
+  @@index([userId, createdAt], name: "operations_by_author")
+  @@map("operations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Version history — immutable
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum VersionKind {
+  AUTO     // every 200 ops / 5 minutes of activity
+  NAMED    // a human pressed "save version" and gave it a name
+  RESTORE  // the result of restoring an earlier version (see below)
+  SNAPSHOT // compaction checkpoint: the bootstrap payload for new clients
+}
+
+/// A version is a materialised document state at a serverSeq watermark.
+///
+/// Versions are IMMUTABLE. There is no update path in the repository layer, and a database
+/// trigger rejects UPDATE and DELETE on this table. This is not paranoia: "restore" is the
+/// one feature where a careless implementation quietly rewrites history, and the cheapest
+/// way to make that impossible is to make the table refuse.
+///
+/// Restore does NOT mutate anything. It computes the operations that transform the current
+/// state into the target state and appends them as NEW operations (with a new Version row of
+/// kind = RESTORE, whose parentVersionId points at what was restored). A restore therefore
+/// merges with a concurrent collaborator's in-flight edits through the same CRDT as a
+/// keystroke — it is not a special case in the merge engine, which is exactly why it cannot
+/// corrupt a live editing session. See DECISIONS.md D-010.
+model Version {
+  id         String      @id @default(cuid(2))
+  documentId String
+  authorId   String
+  kind       VersionKind
+
+  /// Human label. Required for NAMED, null otherwise.
+  label       String?
+  description String?
+
+  /// The document state this version represents, as a serialised CRDT snapshot.
+  content Json
+
+  /// The operation-log position this snapshot is a fold of. `content` == fold(ops where serverSeq <= this).
+  serverSeq BigInt
+
+  /// Set on RESTORE versions: which version was restored. Turns history into a DAG rather
+  /// than a line, so "restore, then restore back" is legible instead of confusing.
+  parentVersionId String?
+
+  /// Cheap timeline stats, denormalised at write time so the history list never folds ops.
+  blockCount Int @default(0)
+  charCount  Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author   User     @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  parent   Version? @relation("VersionLineage", fields: [parentVersionId], references: [id], onDelete: SetNull)
+  children Version[] @relation("VersionLineage")
+
+  @@index([documentId, serverSeq(sort: Desc)], name: "versions_timeline")
+  @@index([documentId, kind], name: "versions_by_kind")
+  @@map("versions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sync bookkeeping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One row per (device replica, document). Drives three things:
+///   - resume: a client reconnecting after 30 days pulls from `lastAckedSeq`;
+///   - compaction: operations below `min(lastAckedSeq)` across live sessions are safe to
+///     stop shipping (the tombstone GC watermark — ARCHITECTURE.md §8);
+///   - the "last seen" column in the UI.
+model SyncSession {
+  id         String @id @default(cuid(2))
+  documentId String
+  userId     String
+  clientId   String
+
+  /// Highest serverSeq this replica has confirmed receiving.
+  lastAckedSeq BigInt @default(0)
+  /// Highest serverSeq this replica has authored.
+  lastPushedSeq BigInt @default(0)
+
+  opsPushed Int @default(0)
+  opsPulled Int @default(0)
+
+  connectedAt  DateTime  @default(now())
+  lastSeenAt   DateTime  @updatedAt
+  disconnectedAt DateTime?
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, clientId], name: "document_client")
+  @@index([documentId, lastAckedSeq], name: "sync_sessions_watermark")
+  @@index([userId], name: "sync_sessions_by_user")
+  @@map("sync_sessions")
+}
+
+enum FailureReason {
+  VALIDATION_FAILED   // zod rejected the payload
+  PAYLOAD_TOO_LARGE   // exceeded a hard cap
+  UNAUTHORIZED        // not a collaborator, or a VIEWER trying to write
+  DOCUMENT_DELETED    // document is soft-deleted
+  CONFLICT            // dependency missing past the compaction watermark → client must resync
+  RATE_LIMITED        // exceeded the per-user op budget
+  INTERNAL            // our fault
+}
+
+/// The dead-letter queue, server side.
+///
+/// An operation that can never succeed is not silently dropped — it is recorded here with the
+/// reason and the original payload, surfaced to the user in the client's DLQ inspector, and
+/// exportable. Silently discarding a user's writes is the single worst failure mode this
+/// system has; the design choice is to make loss *loud* instead of pretending it didn't happen.
+model FailedOperation {
+  id          String        @id @default(cuid(2))
+  operationId String
+  documentId  String
+  userId      String
+  clientId    String
+
+  reason  FailureReason
+  message String        @db.Text
+  /// The rejected operation, verbatim, for support and replay-after-fix.
+  payload Json
+
+  attempts    Int       @default(1)
+  resolvedAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, createdAt(sort: Desc)], name: "failed_ops_by_document")
+  @@index([userId, resolvedAt], name: "failed_ops_by_user")
+  @@map("failed_operations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-cutting: idempotency, rate limiting, audit, AI
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Batch-level idempotency. A push carries `Idempotency-Key: <batch ULID>`; the committed
+/// result is stored here and replayed verbatim if the same key arrives again (a client that
+/// timed out mid-commit and retried must get the original acknowledgement, not a second commit).
+///
+/// Per-operation uniqueness already makes double-commit impossible; this exists so the *response*
+/// is also stable, which is what lets the client advance its checkpoint after a timeout.
+model IdempotencyKey {
+  key       String   @id
+  userId    String
+  route     String
+  /// Hash of the request body. A replay with the same key but a *different* body is a bug or an
+  /// attack, and is rejected with 422 rather than silently answered from cache.
+  requestHash String
+  response    Json
+  statusCode  Int
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt], name: "idempotency_gc")
+  @@map("idempotency_keys")
+}
+
+/// Sliding-window rate limiting, in Postgres rather than in memory.
+///
+/// Serverless and multi-instance deployments have no shared memory, so an in-process limiter is
+/// decorative — it limits one instance while ten others wave the traffic through. One upsert per
+/// request is a real cost, accepted deliberately, and isolated behind a RateLimiter interface so
+/// swapping to Redis later touches one file. See DECISIONS.md D-012.
+model RateLimit {
+  /// e.g. "ops:user_abc", "ai:user_abc", "req:user_abc"
+  key         String   @id
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@index([windowStart], name: "rate_limits_gc")
+  @@map("rate_limits")
+}
+
+enum AuditAction {
+  DOCUMENT_CREATED
+  DOCUMENT_DELETED
+  DOCUMENT_RESTORED
+  COLLABORATOR_INVITED
+  COLLABORATOR_ROLE_CHANGED
+  COLLABORATOR_REMOVED
+  VERSION_CREATED
+  VERSION_RESTORED
+  AI_INVOKED
+  AUTH_LOGIN_SUCCEEDED
+  AUTH_LOGIN_FAILED
+  UNAUTHORIZED_ACCESS_ATTEMPT
+}
+
+/// Append-only. Covers every privileged mutation and every rejected access attempt — the second
+/// half matters more than the first, because a burst of UNAUTHORIZED_ACCESS_ATTEMPT rows against
+/// one document is what an enumeration attack looks like from the inside.
+model AuditLog {
+  id       String      @id @default(cuid(2))
+  action   AuditAction
+  actorId  String?
+  /// Free-form target: a documentId, a userId, a versionId.
+  targetId String?
+  /// Structured context. Never contains document content or credentials.
+  metadata Json?
+
+  ipAddress String?
+  userAgent String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt(sort: Desc)], name: "audit_by_actor")
+  @@index([targetId, createdAt(sort: Desc)], name: "audit_by_target")
+  @@index([action, createdAt(sort: Desc)], name: "audit_by_action")
+  @@map("audit_logs")
+}
+
+enum AiAction {
+  REWRITE
+  IMPROVE
+  SUMMARIZE
+  TRANSLATE
+  FIX_GRAMMAR
+  CHANGE_TONE
+  MEETING_NOTES
+  ACTION_ITEMS
+  CONTINUE_WRITING
+  EXPLAIN
+  GENERATE_TITLE
+  DOCUMENT_INSIGHTS
+}
+
+/// Every AI call, logged. Three reasons, in order of importance: cost attribution (tokens are
+/// money), abuse detection (a user running 10k rewrites is either scripting or being farmed),
+/// and the in-app usage history the product actually shows people.
+///
+/// `output` is retained so a user can re-apply a suggestion they dismissed, and so a bad
+/// generation can be inspected rather than reconstructed.
+model AiHistory {
+  id         String   @id @default(cuid(2))
+  userId     String
+  documentId String?
+  action     AiAction
+
+  model        String
+  /// The user's instruction (for actions that take one), never the full document.
+  prompt       String?  @db.Text
+  /// Characters of document context sent — enough to reason about cost without storing content twice.
+  inputChars   Int      @default(0)
+  output       String?  @db.Text
+
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+  latencyMs    Int @default(0)
+
+  /// Set when the generation failed, so the usage panel can show what went wrong.
+  error String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)], name: "ai_history_by_user")
+  @@index([documentId, createdAt(sort: Desc)], name: "ai_history_by_document")
+  @@map("ai_history")
+}

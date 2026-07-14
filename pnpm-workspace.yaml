@@ -1,0 +1,19 @@
+# pnpm 11 requires explicit opt-in for dependency postinstall scripts.
+# Prisma needs one to link its query engine; esbuild needs one for its native binary.
+# Everything else stays denied by default — an unreviewed postinstall is a supply-chain foothold.
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true
+minimumReleaseAgeExclude:
+  - '@typescript-eslint/eslint-plugin@8.64.0'
+  - '@typescript-eslint/parser@8.64.0'
+  - '@typescript-eslint/project-service@8.64.0'
+  - '@typescript-eslint/scope-manager@8.64.0'
+  - '@typescript-eslint/tsconfig-utils@8.64.0'
+  - '@typescript-eslint/type-utils@8.64.0'
+  - '@typescript-eslint/types@8.64.0'
+  - '@typescript-eslint/typescript-estree@8.64.0'
+  - '@typescript-eslint/utils@8.64.0'
+  - '@typescript-eslint/visitor-keys@8.64.0'
+  - typescript-eslint@8.64.0
