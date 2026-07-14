@@ -22,7 +22,8 @@
     "seed": "tsx prisma/seed.ts",
     "lint:fix": "eslint . --fix",
     "smoke": "tsx scripts/smoke.ts",
-    "smoke:auth": "tsx scripts/auth-smoke.ts"
+    "smoke:auth": "tsx scripts/auth-smoke.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",

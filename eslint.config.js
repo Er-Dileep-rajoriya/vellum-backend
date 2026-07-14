@@ -10,7 +10,19 @@ import tseslint from "typescript-eslint";
  * reviewing carefully.
  */
 export default tseslint.config(
-  { ignores: ["dist/**", "src/generated/**", "node_modules/**", "coverage/**", "eslint.config.js"] },
+  {
+    ignores: [
+      "dist/**",
+      "src/generated/**",
+      "node_modules/**",
+      "coverage/**",
+      "eslint.config.js",
+      // Deployment config, not application code: a CommonJS file pm2 reads, deliberately outside the
+      // TypeScript project. Type-aware linting cannot see it (`was not found by the project service`),
+      // and adding it to tsconfig to satisfy the linter would put a pm2 config in the compiler's input.
+      "ecosystem.config.cjs",
+    ],
+  },
 
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

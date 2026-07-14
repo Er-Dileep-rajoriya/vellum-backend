@@ -17,7 +17,20 @@ import { ulid } from "ulid";
 import { env } from "@/config/env.js";
 import { prisma } from "@/database/client.js";
 
-const BASE = `http://127.0.0.1:${env.PORT}`;
+/**
+ * The target. Defaults to the local server; override to smoke a deployed one.
+ *
+ *   SMOKE_BASE_URL=https://api-vellum.paperflow.in pnpm smoke
+ *
+ * It was hardcoded to localhost, which quietly meant the 21 checks in this file could only ever be run
+ * against a machine you were already sitting on — so the environment they never got run against was the
+ * only one that mattered. A deployment is exactly when you want to ask "does a forged JWT still get a
+ * 401, does a 2MB body still get a 413, does a stranger still get a 404 instead of a 403".
+ *
+ * Note this script also talks to the database directly (it seeds users and reads back what the API
+ * wrote), so it must run somewhere that can reach both — the server itself, or a tunnel.
+ */
+const BASE = process.env["SMOKE_BASE_URL"] ?? `http://127.0.0.1:${env.PORT}`;
 const secret = new TextEncoder().encode(env.API_JWT_SECRET);
 
 let passed = 0;

@@ -16,7 +16,7 @@ import { randomBytes } from "node:crypto";
 import { env } from "@/config/env.js";
 import { prisma } from "@/database/client.js";
 
-const BASE = `http://127.0.0.1:${env.PORT}`;
+const BASE = process.env["SMOKE_BASE_URL"] ?? `http://127.0.0.1:${env.PORT}`;
 const SERVICE = { "X-Service-Token": env.SERVICE_TOKEN, "Content-Type": "application/json" };
 
 let passed = 0;

@@ -41,6 +41,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # BEFORE lint and typecheck, not after.
+      #
+      # The Prisma client is *generated* code and is gitignored, so on a fresh checkout it does not exist.
+      # Both the linter and the compiler are type-aware, so without it every `prisma.document.findMany` is
+      # a call on a type that cannot be resolved — and `no-unsafe-*` fires on every repository method in
+      # the codebase. Hundreds of errors, none of them real, all of them pointing at the wrong thing.
+      #
+      # It works locally only because `postinstall`/`pnpm dev` generated it once, months ago.
+      - run: pnpm exec prisma generate
+
       - run: pnpm lint
       - run: pnpm typecheck
 
