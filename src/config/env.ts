@@ -81,14 +81,23 @@ const EnvSchema = z
      * key pair in the environment is the only source. The SES client is constructed with them
      * explicitly in email.service.ts.
      *
-     * `AWS_SES_FROM_EMAIL` must be an address (or a domain) verified in SES, or every send is
-     * rejected by the API. It is validated as an email here so a typo fails at boot, not at the
-     * first password-reset request.
+     * These are OPTIONAL at the base schema and REQUIRED in production (see the superRefine below).
+     * That split is deliberate: CI and local unit runs never send an email — no test should have to
+     * carry live AWS credentials to boot the app — while production must not start without the
+     * ability to deliver a password-reset code. A missing key in dev/test yields an SES client that
+     * simply fails the (already swallowed) send; a missing key in production fails the boot.
      */
     AWS_REGION: NonEmpty.default("ap-south-1"),
-    AWS_ACCESS_KEY_ID: NonEmpty.describe("AWS access key id for SES"),
-    AWS_SECRET_ACCESS_KEY: NonEmpty.describe("AWS secret access key for SES"),
-    AWS_SES_FROM_EMAIL: z.email({ error: "AWS_SES_FROM_EMAIL must be a verified SES address" }),
+    AWS_ACCESS_KEY_ID: z.string().default(""),
+    AWS_SECRET_ACCESS_KEY: z.string().default(""),
+    // Validated as an email only when set — an empty value is allowed outside production and the
+    // production block below is what rejects it there. A bad *non-empty* value fails everywhere.
+    AWS_SES_FROM_EMAIL: z
+      .string()
+      .default("")
+      .refine((v) => v === "" || z.email().safeParse(v).success, {
+        error: "AWS_SES_FROM_EMAIL must be a valid, SES-verified email address",
+      }),
     AWS_SES_FROM_NAME: NonEmpty.default("Vellum"),
   })
   .superRefine((env, ctx) => {
@@ -118,6 +127,31 @@ const EnvSchema = z
         code: "custom",
         path: ["CORS_ORIGINS"],
         message: "plaintext http:// origin is not allowed in production",
+      });
+    }
+
+    // SES is optional to *boot* in dev/test but mandatory in production: a prod server that cannot
+    // send email cannot verify a sign-up or reset a password, and discovering that at the first
+    // reset request is exactly the 3am failure this schema exists to prevent.
+    if (env.AWS_ACCESS_KEY_ID === "") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AWS_ACCESS_KEY_ID"],
+        message: "AWS_ACCESS_KEY_ID is required in production (SES sends verification/reset email)",
+      });
+    }
+    if (env.AWS_SECRET_ACCESS_KEY === "") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AWS_SECRET_ACCESS_KEY"],
+        message: "AWS_SECRET_ACCESS_KEY is required in production",
+      });
+    }
+    if (env.AWS_SES_FROM_EMAIL === "") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AWS_SES_FROM_EMAIL"],
+        message: "AWS_SES_FROM_EMAIL is required in production and must be SES-verified",
       });
     }
   });

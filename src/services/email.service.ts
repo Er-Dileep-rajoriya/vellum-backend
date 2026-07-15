@@ -24,7 +24,17 @@ const ses = new SESClient({
 // their inbox; the address is what SES must have verified.
 const FROM = `${env.AWS_SES_FROM_NAME} <${env.AWS_SES_FROM_EMAIL}>`;
 
+// Whether SES is actually configured. Outside production the keys may be absent (see config/env.ts),
+// in which case there is nothing to send *to* — attempting it just fails a network call and logs
+// noise. Skip cleanly and record it, so a developer testing sign-up sees why no mail arrived.
+const sesConfigured = env.AWS_ACCESS_KEY_ID !== "" && env.AWS_SES_FROM_EMAIL !== "";
+
 async function sendEmail(to: string, subject: string, html: string, text: string): Promise<void> {
+  if (!sesConfigured) {
+    logger.warn({ to, subject }, "SES not configured — email skipped (set AWS_* to enable)");
+    return;
+  }
+
   try {
     await ses.send(
       new SendEmailCommand({
