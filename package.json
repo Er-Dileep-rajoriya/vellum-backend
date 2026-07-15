@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
+    "@aws-sdk/client-ses": "^3.1086.0",
     "@fastify/cors": "^11.3.0",
     "@fastify/helmet": "^13.1.0",
     "@prisma/adapter-pg": "^7.8.0",
@@ -36,10 +37,10 @@
     "jose": "^6.2.3",
     "pg": "^8.22.0",
     "pino": "^9.14.0",
+    "prisma": "^7.8.0",
     "ulid": "^3.0.2",
     "ws": "^8.21.0",
-    "zod": "^4.4.3",
-    "prisma": "^7.8.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

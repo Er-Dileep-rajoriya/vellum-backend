@@ -86,6 +86,42 @@ model Account {
   @@map("accounts")
 }
 
+enum VerificationPurpose {
+  EMAIL_VERIFY   // confirm the address at sign-up
+  PASSWORD_RESET // authorise a password change for a forgotten password
+}
+
+/// A one-time code sent to an email address, for verification and password reset.
+///
+/// The code itself is NEVER stored. What is stored is an HMAC-SHA256 of the code keyed by the
+/// server secret (see services/otp.service.ts): a 6-digit code is only ~20 bits of entropy, so a
+/// plain hash in a leaked table is reversible in milliseconds — the keyed MAC means a database dump
+/// alone does not reveal a single live code. The real online defence is the `attempts` cap plus the
+/// short `expiresAt`, both enforced at verify time.
+///
+/// Keyed by email, not userId: password-reset must work before we have looked the user up, and a
+/// verify token is issued in the same breath as the user row. One live token per (email, purpose) —
+/// issuing a new one consumes the old.
+model VerificationToken {
+  id       String              @id @default(cuid(2))
+  email    String
+  purpose  VerificationPurpose
+  /// HMAC-SHA256(code, API_JWT_SECRET), hex. Never the code.
+  codeHash String
+
+  /// Wrong guesses so far. At the cap the token is dead — a correct code afterwards still fails,
+  /// which is what stops a 6-digit code from being brute-forced online in a few thousand requests.
+  attempts Int @default(0)
+
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([email, purpose], name: "verification_tokens_lookup")
+  @@index([expiresAt], name: "verification_tokens_gc")
+  @@map("verification_tokens")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Documents & access control
 // ─────────────────────────────────────────────────────────────────────────────

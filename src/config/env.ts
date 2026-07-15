@@ -72,6 +72,24 @@ const EnvSchema = z
     RATE_LIMIT_REQUESTS_PER_MINUTE: z.coerce.number().int().positive().default(120),
     RATE_LIMIT_OPS_PER_MINUTE: z.coerce.number().int().positive().default(600),
     RATE_LIMIT_AI_PER_HOUR: z.coerce.number().int().positive().default(60),
+
+    /**
+     * AWS SES — transactional email (OTP for email verification and password reset).
+     *
+     * Credentials are read here rather than from the ambient AWS credential chain on purpose: this
+     * service is deployed to platforms (Fly, a bare container) that have no instance role, so the
+     * key pair in the environment is the only source. The SES client is constructed with them
+     * explicitly in email.service.ts.
+     *
+     * `AWS_SES_FROM_EMAIL` must be an address (or a domain) verified in SES, or every send is
+     * rejected by the API. It is validated as an email here so a typo fails at boot, not at the
+     * first password-reset request.
+     */
+    AWS_REGION: NonEmpty.default("ap-south-1"),
+    AWS_ACCESS_KEY_ID: NonEmpty.describe("AWS access key id for SES"),
+    AWS_SECRET_ACCESS_KEY: NonEmpty.describe("AWS secret access key for SES"),
+    AWS_SES_FROM_EMAIL: z.email({ error: "AWS_SES_FROM_EMAIL must be a verified SES address" }),
+    AWS_SES_FROM_NAME: NonEmpty.default("Vellum"),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== "production") return;
