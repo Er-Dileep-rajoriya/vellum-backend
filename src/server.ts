@@ -9,6 +9,7 @@ import { ipRateLimit } from "@/middlewares/rateLimit.middleware.js";
 import { aiRoutes } from "@/routes/ai.routes.js";
 import { authRoutes } from "@/routes/auth.routes.js";
 import { documentRoutes } from "@/routes/document.routes.js";
+import { invitationRoutes } from "@/routes/invitation.routes.js";
 import { syncRoutes } from "@/routes/sync.routes.js";
 import { versionRoutes } from "@/routes/version.routes.js";
 import { logger } from "@/utils/logger.js";
@@ -112,6 +113,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get("/health", async () => ({ status: "ok", uptime: process.uptime() }));
 
   await app.register(documentRoutes, { prefix: "/api" });
+  await app.register(invitationRoutes, { prefix: "/api" });
   await app.register(syncRoutes, { prefix: "/api" });
   await app.register(versionRoutes, { prefix: "/api" });
   await app.register(aiRoutes, { prefix: "/api" });

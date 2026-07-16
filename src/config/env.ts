@@ -99,6 +99,19 @@ const EnvSchema = z
         error: "AWS_SES_FROM_EMAIL must be a valid, SES-verified email address",
       }),
     AWS_SES_FROM_NAME: NonEmpty.default("Vellum"),
+
+    /**
+     * The public origin of the frontend, used to build invitation links in transactional email
+     * (`${APP_URL}/invite/<token>`). Optional: when blank it falls back to the first CORS origin,
+     * which is the frontend origin by construction (see DEPLOYMENT.md). Validated as a URL only when
+     * set, so a typo fails at boot rather than producing a dead link in someone's inbox.
+     */
+    APP_URL: z
+      .string()
+      .default("")
+      .refine((v) => v === "" || z.url().safeParse(v).success, {
+        error: "APP_URL must be an absolute URL (e.g. https://vellum.paperflow.in)",
+      }),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV !== "production") return;

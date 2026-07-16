@@ -10,10 +10,6 @@ import { documentRepository } from "@/repositories/document.repository.js";
 const DocumentIdParams = z.object({ id: z.string().min(1).max(64) });
 const TitleBody = z.object({ title: z.string().trim().min(1).max(MAX_TITLE_LENGTH) });
 const RoleBody = z.object({ role: z.enum(["EDITOR", "VIEWER"]) });
-const InviteBody = z.object({
-  email: z.email(),
-  role: z.enum(["EDITOR", "VIEWER"]),
-});
 
 /**
  * Document and collaborator management.
@@ -88,15 +84,6 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
 
     const collaborators = await collaboratorRepository.list(actor, id);
     return reply.send({ collaborators });
-  });
-
-  app.post("/documents/:id/collaborators", async (request, reply) => {
-    const actor = actorOf(request);
-    const { id } = DocumentIdParams.parse(request.params);
-    const body = InviteBody.parse(request.body);
-
-    const collaborator = await collaboratorRepository.invite(actor, id, body.email, body.role);
-    return reply.status(201).send({ collaborator });
   });
 
   app.patch("/documents/:id/collaborators/:userId", async (request, reply) => {

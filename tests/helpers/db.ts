@@ -36,7 +36,7 @@ export async function resetDatabase(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       audit_logs, ai_history, failed_operations, sync_sessions, versions,
-      operations, collaborators, documents, accounts, users,
+      operations, invitations, collaborators, documents, accounts, users,
       idempotency_keys, rate_limits
     RESTART IDENTITY CASCADE
   `);

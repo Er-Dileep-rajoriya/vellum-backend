@@ -158,6 +158,7 @@ model Document {
 
   owner            User              @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   collaborators    Collaborator[]
+  invitations      Invitation[]
   operations       Operation[]
   versions         Version[]
   syncSessions     SyncSession[]
@@ -187,6 +188,56 @@ model Collaborator {
   @@unique([documentId, userId], name: "document_user")
   @@index([userId], name: "collaborators_by_user")
   @@map("collaborators")
+}
+
+enum InvitationStatus {
+  PENDING  // sent, awaiting the invitee
+  ACCEPTED // invitee accepted; a Collaborator row now exists
+  DECLINED // invitee declined
+  REVOKED  // the owner cancelled it before it was accepted
+}
+
+/// A pending invitation to collaborate, addressed to an EMAIL rather than a user.
+///
+/// Sharing is not a direct write to the `collaborators` table: the invitee must *accept*. This is why
+/// the invitation is keyed by email and not userId — the invited person may not have an account yet.
+/// They receive a link carrying a high-entropy token, sign in (or sign up) as that email, and only
+/// then does an `accept` create the Collaborator row. Access is never granted by the owner alone.
+///
+/// The raw token is NEVER stored — only its HMAC-SHA256 (keyed by the server secret, like
+/// VerificationToken). The token is the capability that travels in the email link; a database dump
+/// must not yield a working invite link. Accept additionally requires the signed-in email to match
+/// `email`, so a leaked link cannot grant a *different* account access.
+model Invitation {
+  id           String           @id @default(cuid(2))
+  documentId   String
+  /// The invited address, lowercased. Not a userId — the invitee may not yet exist.
+  email        String
+  /// EDITOR or VIEWER. Never OWNER (enforced in application code, `Exclude<Role, "OWNER">`).
+  role         Role
+  /// HMAC-SHA256(token, API_JWT_SECRET), hex. Never the raw token.
+  tokenHash    String           @unique
+  status       InvitationStatus @default(PENDING)
+
+  /// Audit trail. Plain ids (no relation), matching Collaborator.invitedById.
+  invitedById  String
+  /// The user who accepted — always the one whose email matched `email`.
+  acceptedById String?
+
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  /// One invitation row per (document, email) — re-inviting updates the existing row (new token,
+  /// reset to PENDING) rather than piling up duplicates the owner then has to reconcile.
+  @@unique([documentId, email], name: "document_email")
+  @@index([email, status], name: "invitations_by_email")
+  @@index([expiresAt], name: "invitations_gc")
+  @@map("invitations")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +494,9 @@ enum AuditAction {
   COLLABORATOR_INVITED
   COLLABORATOR_ROLE_CHANGED
   COLLABORATOR_REMOVED
+  INVITATION_ACCEPTED
+  INVITATION_DECLINED
+  INVITATION_REVOKED
   VERSION_CREATED
   VERSION_RESTORED
   AI_INVOKED

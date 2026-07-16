@@ -65,6 +65,24 @@ const BASE_STYLE =
   "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111;line-height:1.5";
 const CODE_STYLE =
   "display:inline-block;font-size:28px;font-weight:600;letter-spacing:6px;padding:12px 20px;background:#f4f4f5;border-radius:8px;margin:16px 0";
+const BUTTON_STYLE =
+  "display:inline-block;background:#111;color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:12px 22px;border-radius:8px;margin:20px 0";
+
+/**
+ * HTML-escape an untrusted value before interpolating it into an email body.
+ *
+ * A document title and a display name are user input. Dropped raw into HTML they are a mail-injection
+ * vector — a title of `<a href="http://evil">` would render as a live link in the recipient's inbox.
+ * The token link is server-built (safe), but everything the inviter typed is escaped here.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 /** Sign-up: confirm the address is real and reachable. */
 export async function sendVerificationEmail(to: string, code: string): Promise<void> {
@@ -76,6 +94,46 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
   <p style="color:#666;font-size:14px">This code expires in 10 minutes. If you didn't create an account, you can ignore this email.</p>
 </div>`;
   const text = `Confirm your email\n\nYour ${env.AWS_SES_FROM_NAME} verification code is: ${code}\n\nThis code expires in 10 minutes. If you didn't create an account, you can ignore this email.`;
+
+  await sendEmail(to, subject, html, text);
+}
+
+/**
+ * Collaboration invite: tell someone a document has been shared with them, and link them to accept.
+ *
+ * The link carries the capability token. The email is addressed to the invited address, and accepting
+ * additionally requires signing in as that address — so forwarding the mail does not hand the document
+ * to someone else. Everything the inviter controls (their name, the document title) is HTML-escaped.
+ */
+export async function sendInvitationEmail(
+  to: string,
+  options: {
+    inviterName: string;
+    documentTitle: string;
+    role: "EDITOR" | "VIEWER";
+    acceptUrl: string;
+    expiresInDays: number;
+  },
+): Promise<void> {
+  const inviter = escapeHtml(options.inviterName);
+  const title = escapeHtml(options.documentTitle);
+  const capability = options.role === "EDITOR" ? "edit" : "view";
+  const subject = `${options.inviterName} shared "${options.documentTitle}" with you`;
+
+  const html = `<div style="${BASE_STYLE}">
+  <h2 style="margin:0 0 8px">You've been invited to collaborate</h2>
+  <p><strong>${inviter}</strong> invited you to <strong>${capability}</strong> the document <strong>"${title}"</strong> on ${env.AWS_SES_FROM_NAME}.</p>
+  <a href="${options.acceptUrl}" style="${BUTTON_STYLE}">View invitation</a>
+  <p style="color:#666;font-size:14px">Or paste this link into your browser:<br><span style="color:#111">${options.acceptUrl}</span></p>
+  <p style="color:#666;font-size:14px">This invitation expires in ${String(options.expiresInDays)} days. To accept, sign in with <strong>${escapeHtml(to)}</strong>. If you weren't expecting this, you can ignore this email.</p>
+</div>`;
+
+  const text = `${options.inviterName} invited you to ${capability} "${options.documentTitle}" on ${env.AWS_SES_FROM_NAME}.
+
+Accept the invitation:
+${options.acceptUrl}
+
+This invitation expires in ${String(options.expiresInDays)} days. To accept, sign in with ${to}. If you weren't expecting this, you can ignore this email.`;
 
   await sendEmail(to, subject, html, text);
 }
