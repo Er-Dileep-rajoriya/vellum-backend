@@ -307,7 +307,7 @@ engineers cannot reproduce.
 - **DoD:** kill the server mid-type → keep typing → reload → restart server → converged, zero loss (E2E)
 
 ## Phase 11 — AI ✅
-- [x] Streaming over SSE (Anthropic `claude-opus-4-8`), 12 actions, `ai_history` (successes **and**
+- [x] Streaming over SSE (DeepSeek `deepseek-chat`), 12 actions, `ai_history` (successes **and**
       failures — logging only the successes makes the failure rate invisible), per-hour AI rate limit
       denominated in *calls* (tokens are money in a way database rows are not)
 - [x] **AI output → CRDT operations** (D-014) via the same `OperationFactory` as a keystroke
@@ -321,7 +321,7 @@ engineers cannot reproduce.
       in the same paragraph.* Both replicas converge byte-identically, the rewrite lands, **and Bob's
       sentence survives.** An AI that wrote directly to document state would have erased it silently.
 - Checked the live API reference rather than writing from memory — and it mattered: the default model
-  is `claude-opus-4-8`, and `budget_tokens` (my recalled thinking parameter) now returns a 400.
+  is `deepseek-chat`, and `budget_tokens` (my recalled thinking parameter) now returns a 400.
 
 ## Phase 7 — Auth ✅
 - [x] Auth.js (Google + credentials, JWT session) in the frontend; **users live in the backend** behind

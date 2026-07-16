@@ -76,7 +76,7 @@ and a `--prod` install that omits it fails on the server rather than on a laptop
 | `PORT` | `4000` (5000 is taken by paperflow) |
 | `CORS_ORIGINS` | the frontend origin, exactly. Never `*` — credentials ride these requests. |
 | `API_JWT_SECRET`, `SERVICE_TOKEN` | `openssl rand -base64 48`. **Must byte-match the frontend's.** |
-| `ANTHROPIC_API_KEY` | server-side only; it must never reach the browser. |
+| `DEEPSEEK_API_KEY` | server-side only; it must never reach the browser. |
 
 ---
 

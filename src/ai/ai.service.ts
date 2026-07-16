@@ -152,7 +152,7 @@ export const aiService = {
        * The model produced nothing — a content filter, a refusal, or a degenerate empty completion.
        * Surface it as an error rather than a silent empty result, which would look like a bug in the
        * editor rather than a decision by the model. (OpenAI-compatible APIs have no dedicated
-       * "refusal" stop reason the way Anthropic does; an empty body is the signal.)
+       * "refusal" stop reason the way some providers do; an empty body is the signal.)
        */
       if (output.trim() === "") {
         yield {

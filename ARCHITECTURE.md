@@ -443,7 +443,7 @@ AI is not a text box glued to the side; it is a **first-class op producer**. Eve
 through the same `OpFactory` as a keystroke, which means AI edits are: offline-queued, undoable,
 collaboratively merged, versioned, and audited — for free, because they aren't a special case.
 
-- Streaming via Anthropic SDK (`claude-sonnet-5`) → `ReadableStream` from a Node route handler.
+- Streaming via the OpenAI-compatible DeepSeek client → SSE stream handling from a Node route handler.
 - Actions: rewrite, improve, summarise, translate, fix grammar, change tone, extract action items,
   meeting notes, continue writing, explain selection, generate title, document insights.
 - Every call is logged to `ai_history` (prompt, action, model, tokens in/out, latency, documentId,
