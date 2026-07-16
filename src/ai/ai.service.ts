@@ -45,10 +45,13 @@ import { AI_PROMPTS, buildUserMessage } from "./prompts.js";
  * once its `baseURL` is pointed at DeepSeek. Using the SDK rather than hand-rolled `fetch` gives us
  * battle-tested SSE parsing, abort handling, and typed responses for free.
  */
-const deepseek = new OpenAI({
-  apiKey: env.DEEPSEEK_API_KEY,
-  baseURL: env.DEEPSEEK_BASE_URL,
-});
+const deepseek =
+  env.DEEPSEEK_API_KEY === ""
+    ? null
+    : new OpenAI({
+        apiKey: env.DEEPSEEK_API_KEY,
+        baseURL: env.DEEPSEEK_BASE_URL,
+      });
 
 export interface AiRequest {
   readonly action: AiAction;
@@ -74,7 +77,7 @@ export const aiService = {
    * the model, and we stop paying for tokens nobody will ever see.
    */
   async *stream(actor: Actor, request: AiRequest): AsyncGenerator<AiStreamChunk> {
-    if (env.DEEPSEEK_API_KEY === "") {
+    if (deepseek === null) {
       throw internal("AI is not configured on this server");
     }
 
