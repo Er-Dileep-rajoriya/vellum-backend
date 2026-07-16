@@ -11,6 +11,21 @@ EC2 + pm2 + nginx + certbot   —   no Docker anywhere
 
 ---
 
+## Author & submission
+
+Built by **Dileep Rajoriya** — House of Edtech, Fullstack Developer Assignment 2.
+
+| | |
+|---|---|
+| 🌐 **Live demo** | https://vellum.paperflow.in |
+| 🔌 **Live API** | https://api-vellum.paperflow.in |
+| ⚙️ **Backend repo** | https://github.com/Er-Dileep-rajoriya/vellum-backend |
+| 💻 **Frontend repo** | https://github.com/Er-Dileep-rajoriya/vellum-frontend |
+| 👤 **GitHub** | https://github.com/Er-Dileep-rajoriya |
+| 🔗 **LinkedIn** | https://www.linkedin.com/in/dileep-rajoriya-a63a561ba/ |
+
+---
+
 ## The one idea that explains this whole codebase
 
 **The server never runs the merge algorithm.**
@@ -65,6 +80,21 @@ authoritative, and any client can rebuild and check a snapshot by replaying it.
   `fakeVerify()` equalises the *timing* (measured in CI: 178ms vs 171ms, ratio 1.04×).
 - **RBAC** — Owner / Editor / Viewer. A viewer can read and cannot sync, restore, or delete.
 - **A stranger gets 404, never 403** — a 403 confirms the document exists, which is an existence oracle.
+
+### Invitations (email → accept)
+Sharing a document is **not** a direct insert into the collaborators table. The owner creates a pending
+`Invitation` and an email goes out (via AWS SES) with a capability-token link; access is granted only when
+the invitee **accepts**.
+
+- **Keyed by email, not user id** — the invitee may not have an account yet; existence is resolved at
+  accept time, not invite time.
+- **The raw token is never stored** — only its HMAC-SHA256 (keyed by the server secret, like the OTP), so
+  a database dump does not yield a working invite link. 7-day expiry.
+- **Accept requires the signed-in email to equal the invited email** — a forwarded link cannot grant a
+  *different* account access — and the preview endpoint withholds the document title on a mismatch.
+- Owner surface: create / list-pending / revoke / resend. Invitee surface: preview / accept / decline.
+  Every mutation is audited, and the old *direct-add* route was removed so "no access without accept" is a
+  property of the API, not a convention.
 
 ### Version history
 - Immutable, git-like. **Postgres triggers reject `UPDATE` and `DELETE`** on `versions`, `operations` and
@@ -129,7 +159,7 @@ src/
 ├── config/          env.ts — fails closed on a missing variable
 └── constants/       limits.ts — every cap in one place
 prisma/
-├── schema.prisma    13 tables
+├── schema.prisma    14 tables
 └── migrations/      includes the triggers that make history immutable
 scripts/
 ├── smoke.ts         21 checks against a RUNNING server
@@ -168,7 +198,7 @@ pnpm dev          # :4000
 | Command | What it does |
 |---|---|
 | `pnpm dev` | Watch mode |
-| `pnpm test` | 54 integration tests against a **real** Postgres |
+| `pnpm test` | 66 integration tests against a **real** Postgres |
 | `pnpm lint` / `pnpm typecheck` | Zero warnings, no `any` |
 | `pnpm build` | `dist/` — what actually ships |
 | `pnpm smoke` | 21 checks against a running server |
@@ -201,7 +231,7 @@ what's wrong, rather than surfacing as a mystery 500 an hour later.
 ## Testing
 
 ```bash
-pnpm test        # 54 tests, real Postgres, real advisory locks, real triggers
+pnpm test        # 66 tests, real Postgres, real advisory locks, real triggers
 ```
 
 There are no database mocks. The tests that matter cannot be written against a mock:
