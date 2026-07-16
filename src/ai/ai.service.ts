@@ -123,6 +123,16 @@ export const aiService = {
       // The system prompt and the fenced document travel as two messages: the system role is the
       // operator's voice, the user role carries the document as data. `include_usage` asks DeepSeek to
       // emit a final chunk with token counts, for the cost accounting below.
+      logger.debug(
+        {
+          userId: actor.userId,
+          documentId: request.documentId,
+          action: request.action,
+          deepseekConfigured: deepseek !== null,
+        },
+        "AI stream request started",
+      );
+
       const stream = await deepseek.chat.completions.create({
         model: env.DEEPSEEK_MODEL,
         max_tokens: MAX_AI_OUTPUT_TOKENS,
