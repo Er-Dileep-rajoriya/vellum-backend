@@ -50,12 +50,13 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     const actor = actorOf(request);
     const body = AiRequestSchema.parse(request.body);
 
-    // Set SSE headers while preserving CORS headers that Fastify middleware already set
-    reply.header("Content-Type", "text/event-stream");
-    reply.header("Cache-Control", "no-cache, no-transform");
-    reply.header("Connection", "keep-alive");
-    reply.header("X-Accel-Buffering", "no");
-
+    // Set SSE headers on the raw response before writeHead
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no");
+    
+    // writeHead will send all currently-set headers (including CORS headers from middleware)
     reply.raw.writeHead(200);
 
     const send = (data: unknown): void => {
