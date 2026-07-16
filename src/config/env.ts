@@ -65,8 +65,17 @@ const EnvSchema = z
       error: "SERVICE_TOKEN must be at least 32 characters",
     }),
 
-    ANTHROPIC_API_KEY: z.string().default(""),
-    ANTHROPIC_MODEL: NonEmpty.default("claude-opus-4-8"),
+    /**
+     * DeepSeek powers the AI add-on features. Its API is OpenAI-compatible, so it is driven through
+     * the `openai` SDK pointed at `DEEPSEEK_BASE_URL` (see ai.service.ts).
+     *
+     * The key is OPTIONAL: blank simply disables the AI endpoints (they return a clear "not
+     * configured" error) while the rest of the product runs. Nothing else in the app depends on it, so
+     * it is not worth failing the boot over — unlike the JWT secret, whose absence is a security hole.
+     */
+    DEEPSEEK_API_KEY: z.string().default(""),
+    DEEPSEEK_MODEL: NonEmpty.default("deepseek-chat"),
+    DEEPSEEK_BASE_URL: z.url().default("https://api.deepseek.com"),
 
     MAX_REQUEST_BYTES: z.coerce.number().int().positive().default(1_048_576),
     RATE_LIMIT_REQUESTS_PER_MINUTE: z.coerce.number().int().positive().default(120),

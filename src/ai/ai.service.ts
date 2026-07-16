@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 import { env } from "@/config/env.js";
 import {
@@ -37,7 +37,18 @@ import { AI_PROMPTS, buildUserMessage } from "./prompts.js";
  * destroying a collaborator's concurrent edit.
  */
 
-const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+/**
+ * DeepSeek, driven through the OpenAI-compatible client.
+ *
+ * DeepSeek's HTTP API mirrors OpenAI's `/chat/completions` (including SSE streaming and
+ * `stream_options.include_usage` for token accounting), so the official `openai` SDK works unchanged
+ * once its `baseURL` is pointed at DeepSeek. Using the SDK rather than hand-rolled `fetch` gives us
+ * battle-tested SSE parsing, abort handling, and typed responses for free.
+ */
+const deepseek = new OpenAI({
+  apiKey: env.DEEPSEEK_API_KEY,
+  baseURL: env.DEEPSEEK_BASE_URL,
+});
 
 export interface AiRequest {
   readonly action: AiAction;
@@ -63,7 +74,7 @@ export const aiService = {
    * the model, and we stop paying for tokens nobody will ever see.
    */
   async *stream(actor: Actor, request: AiRequest): AsyncGenerator<AiStreamChunk> {
-    if (env.ANTHROPIC_API_KEY === "") {
+    if (env.DEEPSEEK_API_KEY === "") {
       throw internal("AI is not configured on this server");
     }
 
@@ -106,35 +117,51 @@ export const aiService = {
     let outputTokens = 0;
 
     try {
-      const stream = anthropic.messages.stream({
-        model: env.ANTHROPIC_MODEL,
+      // The system prompt and the fenced document travel as two messages: the system role is the
+      // operator's voice, the user role carries the document as data. `include_usage` asks DeepSeek to
+      // emit a final chunk with token counts, for the cost accounting below.
+      const stream = await deepseek.chat.completions.create({
+        model: env.DEEPSEEK_MODEL,
         max_tokens: MAX_AI_OUTPUT_TOKENS,
-        system: spec.system,
+        stream: true,
+        stream_options: { include_usage: true },
         messages: [
+          { role: "system", content: spec.system },
           { role: "user", content: buildUserMessage(request.action, content, request.prompt) },
         ],
       });
 
-      for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          output += event.delta.text;
-          yield { type: "delta", text: event.delta.text };
+      let finishReason: string | null = null;
+
+      for await (const chunk of stream) {
+        // The usage chunk (emitted last, thanks to include_usage) carries no choices — guard for it.
+        const choice = chunk.choices[0];
+        const delta = choice?.delta?.content ?? "";
+        if (delta !== "") {
+          output += delta;
+          yield { type: "delta", text: delta };
+        }
+        if (choice?.finish_reason != null) finishReason = choice.finish_reason;
+        if (chunk.usage != null) {
+          inputTokens = chunk.usage.prompt_tokens;
+          outputTokens = chunk.usage.completion_tokens;
         }
       }
 
-      const final = await stream.finalMessage();
-      inputTokens = final.usage.input_tokens;
-      outputTokens = final.usage.output_tokens;
-
       /**
-       * A refusal is a successful HTTP response with `stop_reason: "refusal"` and empty content —
-       * NOT an exception. Code that reads `content[0]` unconditionally breaks here. Surfacing it as
-       * an error to the client is the honest thing: the user asked for something and did not get it,
-       * and a silent empty result would look like a bug in our editor rather than a decision by the
-       * model.
+       * The model produced nothing — a content filter, a refusal, or a degenerate empty completion.
+       * Surface it as an error rather than a silent empty result, which would look like a bug in the
+       * editor rather than a decision by the model. (OpenAI-compatible APIs have no dedicated
+       * "refusal" stop reason the way Anthropic does; an empty body is the signal.)
        */
-      if (final.stop_reason === "refusal") {
-        yield { type: "error", message: "The model declined this request." };
+      if (output.trim() === "") {
+        yield {
+          type: "error",
+          message:
+            finishReason === "content_filter"
+              ? "The model declined this request."
+              : "The model returned no content. Please try again.",
+        };
         return;
       }
 
@@ -163,7 +190,7 @@ export const aiService = {
             userId: actor.userId,
             documentId: request.documentId,
             action: request.action,
-            model: env.ANTHROPIC_MODEL,
+            model: env.DEEPSEEK_MODEL,
             prompt: request.prompt ?? null,
             inputChars: content.length,
             output: output === "" ? null : output.slice(0, 50_000),

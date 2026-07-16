@@ -106,7 +106,7 @@ the invitee **accepts**.
 ### AI
 - Rewrite, improve, summarise, translate, grammar, tone, meeting notes, action items, continue writing,
   explain, generate title, insights — streamed over SSE.
-- The Anthropic key lives **only** here and never reaches the browser.
+- Powered by **DeepSeek** (OpenAI-compatible, via the `openai` SDK). The key lives **only** here and never reaches the browser.
 - The document is passed to the model as **delimited data**, and model output re-enters the system as
   ordinary CRDT text operations — so it cannot inject markup or structure even if the model is fully
   compromised, and an AI rewrite merges with a collaborator's live typing like any other edit.
@@ -152,7 +152,7 @@ src/
 ├── services/        Business logic. sync.service.ts is the commit pipeline.
 ├── repositories/    Data access. EVERY method takes (actor, …) — see D-011.
 ├── collaboration/   WebSocket relay + room hub. No write path of its own.
-├── ai/              Anthropic streaming + prompts (document fenced as data).
+├── ai/              DeepSeek streaming (OpenAI-compatible) + prompts (document fenced as data).
 ├── middlewares/     auth, rate limiting, request size, error taxonomy
 ├── validators/      Zod wire schemas — the contract with the client
 ├── database/        Prisma client + withDocumentLock (advisory lock)
@@ -220,7 +220,8 @@ SMOKE_BASE_URL=https://api-vellum.paperflow.in pnpm smoke
 | `SERVICE_TOKEN` | ✅ | ≥32 chars. Service-to-service; the frontend has no database of its own. |
 | `HOST` | | `127.0.0.1` in production — nginx is the only thing that may reach the API |
 | `PORT` | | 4000 |
-| `ANTHROPIC_API_KEY` | | Server-side only. Blank ⇒ AI endpoints return a clear error; everything else works. |
+| `DEEPSEEK_API_KEY` | | Server-side only. Blank ⇒ AI endpoints return a clear error; everything else works. |
+| `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL` | | Default `deepseek-chat` / `https://api.deepseek.com` |
 | `MAX_REQUEST_BYTES`, `RATE_LIMIT_*` | | Caps; see `constants/limits.ts` |
 
 `config/env.ts` **fails closed**: a missing or malformed variable stops the process at boot with a list of
