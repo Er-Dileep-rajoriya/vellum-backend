@@ -1,5 +1,8 @@
-import "dotenv/config";
 import { z } from "zod";
+
+import { loadAppEnv } from "./dotenv.js";
+
+loadAppEnv();
 
 /**
  * Environment validation.
