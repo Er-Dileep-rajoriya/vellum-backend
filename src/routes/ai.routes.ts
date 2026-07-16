@@ -50,15 +50,13 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     const actor = actorOf(request);
     const body = AiRequestSchema.parse(request.body);
 
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      // Nginx and friends buffer proxied responses by default, which would hold every token until
-      // the stream closed — turning a live stream back into a spinner, in production only, where it
-      // is hardest to notice.
-      "X-Accel-Buffering": "no",
-    });
+    // Set SSE headers while preserving CORS headers that Fastify middleware already set
+    reply.header("Content-Type", "text/event-stream");
+    reply.header("Cache-Control", "no-cache, no-transform");
+    reply.header("Connection", "keep-alive");
+    reply.header("X-Accel-Buffering", "no");
+
+    reply.raw.writeHead(200);
 
     const send = (data: unknown): void => {
       reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
